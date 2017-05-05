@@ -199,7 +199,150 @@
 
    #### 操作LinkedList方法
 
-   <a id="addAll"></a> this this
+   ##### 常用方法
+
+   ``` java
+   public E getFirst() {
+           final Node<E> f = first;
+           if (f == null)
+               throw new NoSuchElementException();
+           return f.item;
+       }
+
+   public E getLast() {
+           final Node<E> l = last;
+           if (l == null)
+               throw new NoSuchElementException();
+           return l.item;
+       }
+
+   public E removeFirst() {
+           final Node<E> f = first;
+           if (f == null)
+               throw new NoSuchElementException();
+           return unlinkFirst(f);
+       }
+
+   public E removeLast() {
+           final Node<E> l = last;
+           if (l == null)
+               throw new NoSuchElementException();
+           return unlinkLast(l);
+       }
+
+   public void addFirst(E e) {
+           linkFirst(e);
+       }
+
+   public void addLast(E e) {
+           linkLast(e);
+       }
+
+   public int size() {
+           return size;
+       }
+
+   public boolean add(E e) {
+           linkLast(e);
+           return true;
+       }
+
+   public boolean remove(Object o) {
+           if (o == null) {
+               for (Node<E> x = first; x != null; x = x.next) {
+                   if (x.item == null) {
+                       unlink(x);
+                       return true;
+                   }
+               }
+           } else {
+               for (Node<E> x = first; x != null; x = x.next) {
+                   if (o.equals(x.item)) {
+                       unlink(x);
+                       return true;
+                   }
+               }
+           }
+           return false;
+       }
+   ```
+
+   以上方法常用，且操作简单，都是对链表的简单操作。因此在这不加多余的解释，相信大家也能理解。
+
+   ###### addAll <a id="addAll"></a>
+
+   ``` java
+   public boolean addAll(Collection<? extends E> c) {
+           return addAll(size, c);
+       }
+
+   public boolean addAll(int index, Collection<? extends E> c) {
+           checkPositionIndex(index);
+
+           Object[] a = c.toArray();
+           int numNew = a.length;
+           if (numNew == 0)
+               return false;
+
+           Node<E> pred, succ;
+           if (index == size) {
+               succ = null;
+               pred = last;
+           } else {
+               succ = node(index);
+               pred = succ.prev;
+           }
+
+           for (Object o : a) {
+               @SuppressWarnings("unchecked") E e = (E) o;
+               Node<E> newNode = new Node<>(pred, e, null);
+               if (pred == null)
+                   first = newNode;
+               else
+                   pred.next = newNode;
+               pred = newNode;
+           }
+
+           if (succ == null) {
+               last = pred;
+           } else {
+               pred.next = succ;
+               succ.prev = pred;
+           }
+
+           size += numNew;
+           modCount++;
+           return true;
+       }
+
+   //将LinkedList转化成数组，实际实现是遍历链表，将链表中的值存入数组内。
+   public Object[] toArray() {
+           Object[] result = new Object[size];
+           int i = 0;
+           for (Node<E> x = first; x != null; x = x.next)
+               result[i++] = x.item;
+           return result;
+       }
+
+   //找到处于index位置的节点，if-else判断是为了找出耗时较少的遍历途径，返回Node
+   Node<E> node(int index) {
+           // assert isElementIndex(index);
+
+           if (index < (size >> 1)) {
+               Node<E> x = first;
+               for (int i = 0; i < index; i++)
+                   x = x.next;
+               return x;
+           } else {
+               Node<E> x = last;
+               for (int i = size - 1; i > index; i--)
+                   x = x.prev;
+               return x;
+           }
+       }
+   ```
+
+   ​	作为addAll方法，实现的本质还是在链表的index位置插入内容为c的链表。定义[succ]()为当前插入位置的节点，[pred]()为插入位置的前置节点。插入过程就是遍历内容数组，新建一个节点，将[pred]()的后置节点指向新建节点newNode。完成后，后移[pred]()指向新建节点。数组循环完成后，建立最后一个新建节点和插入位置节点[succ]()的关联。至此，操作完成。
 
    ​
 
