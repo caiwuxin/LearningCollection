@@ -265,11 +265,24 @@
            }
            return false;
        }
+
+   	public E get(int index) {
+           checkElementIndex(index);
+           return node(index).item;
+       }
+   	
+       public E set(int index, E element) {
+           checkElementIndex(index);
+           Node<E> x = node(index);
+           E oldVal = x.item;
+           x.item = element;
+           return oldVal;
+       }
    ```
 
    以上方法常用，且操作简单，都是对链表的简单操作。因此在这不加多余的解释，相信大家也能理解。
 
-   ###### addAll <a id="addAll"></a>
+   ###### addAll  <a id="addAll"></a>
 
    ``` java
    public boolean addAll(Collection<? extends E> c) {
@@ -344,7 +357,217 @@
 
    ​	作为addAll方法，实现的本质还是在链表的index位置插入内容为c的链表。定义[succ]()为当前插入位置的节点，[pred]()为插入位置的前置节点。插入过程就是遍历内容数组，新建一个节点，将[pred]()的后置节点指向新建节点newNode。完成后，后移[pred]()指向新建节点。数组循环完成后，建立最后一个新建节点和插入位置节点[succ]()的关联。至此，操作完成。
 
+   ​	而其他的成员方法，都是对链表的操作，均可以调用操作链表的方法，所以不再一一介绍，如果有兴趣可以自己查看源码。由于LinkedList采用双向链表实现，所以不存在数组扩容的问题。通过以上方法可以看出，LinkedList的增删操作开销很小，只需要遍历到目标位置，进行链表节点的增删，而对于在表起点和终点的增删，更只是常数时间的操作。但相较于ArrayList的get方法，LinkedList仍需要遍历链表才能找到索引对应值，效率不好。
+
    ​
 
 
+### 迭代器的实现
+
+​	想要在不暴露LinkedList的内部实现的前提下，遍历访问List使用迭代器是一种很好的选择。接下来就是介绍LinkedList中的迭代器实现：
+
+``` java
+public class LinkedList<E>
+    extends AbstractSequentialList<E>
+    implements List<E>, Deque<E>, Cloneable, java.io.Serializable
+{
+  	//step 4
+ 	public ListIterator<E> listIterator(int index) {
+        checkPositionIndex(index);
+        return new ListItr(index);
+    } 
+}
+```
+
+
+
+``` java
+public abstract class AbstractSequentialList<E> extends AbstractList<E> {
+  //step 1	
+  public Iterator<E> iterator() {
+        return listIterator();
+  }
+  //step 3
+  public abstract ListIterator<E> listIterator(int index); 
+}
+```
+
+
+
+``` java
+public abstract class AbstractList<E> extends AbstractCollection<E> implements List<E> {
+ 
+  public Iterator<E> iterator() {
+        return new Itr();
+    }
+
+    //step 2 
+    public ListIterator<E> listIterator() {
+        return listIterator(0);
+    }
+  
+    public ListIterator<E> listIterator(final int index) {
+        rangeCheckForAdd(index);
+
+        return new ListItr(index);
+    }
+}
+```
+
+按照以上的执行顺序可以看到，LinkedList的iterator()的实现最终追溯到内部类ListItr。
+
+``` java
+private class ListItr implements ListIterator<E> {
+        private Node<E> lastReturned = null;//可以理解为当前访问的节点
+        private Node<E> next;
+        private int nextIndex;
+        private int expectedModCount = modCount;
+
+        ListItr(int index) {
+            // assert isPositionIndex(index);
+            next = (index == size) ? null : node(index);
+            nextIndex = index;
+        }
+		//判断是否有下个元素，将下个元素索引值和List大小比较
+        public boolean hasNext() {
+            return nextIndex < size;
+        }
+		//返回索引指向的元素，并将next指向当前的后置节点，索引值+1。
+        public E next() {
+            checkForComodification();//迭代器和初始List一致性校验
+            if (!hasNext())
+                throw new NoSuchElementException();
+
+            lastReturned = next;
+            next = next.next;
+            nextIndex++;
+            return lastReturned.item;
+        }
+
+        public boolean hasPrevious() {
+            return nextIndex > 0;
+        }
+		//返回当前next节点指向的前置节点，并将next指向当前的前置节点，索引值-1.
+  		//主要应用于定义的另一种倒叙遍历方式
+        public E previous() {
+            checkForComodification();
+            if (!hasPrevious())
+                throw new NoSuchElementException();
+
+            lastReturned = next = (next == null) ? last : next.prev;
+            nextIndex--;
+            return lastReturned.item;
+        }
+
+        public int nextIndex() {
+            return nextIndex;
+        }
+
+        public int previousIndex() {
+            return nextIndex - 1;
+        }
+		//把当前位置节点移除
+        public void remove() {
+            checkForComodification();
+            if (lastReturned == null)
+                throw new IllegalStateException();
+
+            Node<E> lastNext = lastReturned.next;
+            unlink(lastReturned);
+            if (next == lastReturned)
+                next = lastNext;
+            else
+                nextIndex--;
+            lastReturned = null;
+            expectedModCount++;
+        }
+
+        public void set(E e) {
+            if (lastReturned == null)
+                throw new IllegalStateException();
+            checkForComodification();
+            lastReturned.item = e;
+        }
+
+        public void add(E e) {
+            checkForComodification();
+            lastReturned = null;
+            if (next == null)
+                linkLast(e);
+            else
+                linkBefore(e, next);
+            nextIndex++;
+            expectedModCount++;
+        }
+
+        final void checkForComodification() {
+            if (modCount != expectedModCount)
+                throw new ConcurrentModificationException();
+        }
+    }
+```
+
+既然提到迭代遍历，也可以顺带讨论List遍历时删除元素的问题：
+
+``` java
+public static List<String> initialList(){
+		List<String> list = new LinkedList<>();
+		list.add("a");
+		list.add("b");
+		list.add("c");
+		list.add("d");
+		return list;
+	}
+	
+	public static void removeByFor(List<String> list){
+		for (int i = 0; i < list.size(); i++) {
+			if("b".equals(list.get(i))){
+				System.out.println(i);
+				list.remove(i);
+			}
+			if("d".equals(list.get(i))){
+				System.out.println(i);
+				list.remove(i);
+			}
+		}
+		System.out.println(list);
+	}
+	
+	public static void removeByForeach(List<String> list){
+		for (String string : list) {
+			if ("b".equals(string)) {
+				list.remove(string);
+			}
+		}
+		System.out.println(list);
+	}
+	
+	public static void removeByIterator(List<String>list){
+		Iterator<String> e = list.iterator();
+		while (e.hasNext()) {
+			String item = e.next();
+			if ("b".equals(item)) {
+				e.remove();
+			}
+		}
+		System.out.println(list);
+	}
+	
+	public static void main(String []args){
+		removeByFor(initialList());			//1
+		removeByForeach(initialList());		//2
+		removeByIterator(initialList());	//3
+	}
+```
+
+* 方法1：能正常删除，但是删除d时，索引index为2，和原List中的索引值不同，可能会对其他操作造成影响。且删除操作经历了两次遍历(外部一次，remove操作一次)，时间复杂度增加。
+* 方法2：会抛出ConcurrentModificationException异常。因为foreach内部也是使用iterator进行遍历，方法2操作只更改了modCount，没有更改Iterator中的expectedModCount。
+* 方法3：最合适的遍历删除，只经历一次遍历，时间复杂度低。
+
+### 结语
+
+LinkedList的实现是基于双向链表，因此它的一切性质都是与双向链表相关的：
+
+* 增删时间复杂度低 *(O(n):O(n^2))*
+* get()时间复杂度比ArrayList高 *(O(n):O(1))*
 
