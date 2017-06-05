@@ -1,0 +1,480 @@
+深入Collection之HashMap
+
+	作为Map中最常使用的实现类HashMap，它的重要性当然毋庸置疑，所以这篇文章就是有关HashMap的实现和功能介绍。
+
+成员变量
+
+    	//默认数组初始化容量
+    	static final int DEFAULT_INITIAL_CAPACITY = 16;
+    
+        /**
+         * 定义最大的数组容量，当初始化时的入参的capacity容量比这个值大时
+         * 使用这个MAXIMUM_CAPACITY
+         */
+        static final int MAXIMUM_CAPACITY = 1 << 30;
+    
+        /**
+         * 默认的负载因子
+         */
+        static final float DEFAULT_LOAD_FACTOR = 0.75f;
+    
+        /**
+         * hashmap存储的实际实现，使用Entry类的数组
+         * 数组长度必须是2的指数倍
+         */
+        transient Entry<K,V>[] table;
+    
+        /**
+         * map中包含的key-value对的数目
+         */
+        transient int size;
+    
+        /**
+         * 数组需要扩容的阀值，当map中包含k-v数达到threshold，需要对数组扩容
+         * 计算标准是数组容量 * 负载因子(capacity * load factor)
+         */
+        int threshold;
+    
+        /**
+         * 哈希表的负载因子
+         */
+        final float loadFactor;
+    
+        /**
+         * 哈希表结构上被改变的次数，主要为了防止并发出错。
+         */
+        transient int modCount;
+    
+        /**
+         * 这个常量是为字符串作为key时准备的表容量的默认阀值。可替代的哈希减少了因为字符串哈希值计算的脆弱性
+         * 造成的哈希碰撞
+         */
+        static final int ALTERNATIVE_HASHING_THRESHOLD_DEFAULT = Integer.MAX_VALUE;
+    
+        /**
+         * holds values which can't be initialized until after VM is booted.
+         */
+        private static class Holder {
+    
+                // Unsafe mechanics
+            /**
+             * Unsafe utilities
+             */
+            static final sun.misc.Unsafe UNSAFE;
+    
+            /**
+             * Offset of "final" hashSeed field we must set in readObject() method.
+             */
+            static final long HASHSEED_OFFSET;
+    
+            /**
+             * Table capacity above which to switch to use alternative hashing.
+             */
+            static final int ALTERNATIVE_HASHING_THRESHOLD;
+    
+            static {
+                String altThreshold = java.security.AccessController.doPrivileged(
+                    new sun.security.action.GetPropertyAction(
+                        "jdk.map.althashing.threshold"));
+    
+                int threshold;
+                try {
+                    threshold = (null != altThreshold)
+                            ? Integer.parseInt(altThreshold)
+                            : ALTERNATIVE_HASHING_THRESHOLD_DEFAULT;
+    
+                    // disable alternative hashing if -1
+                    if (threshold == -1) {
+                        threshold = Integer.MAX_VALUE;
+                    }
+    
+                    if (threshold < 0) {
+                        throw new IllegalArgumentException("value must be positive integer.");
+                    }
+                } catch(IllegalArgumentException failed) {
+                    throw new Error("Illegal value for 'jdk.map.althashing.threshold'", failed);
+                }
+                ALTERNATIVE_HASHING_THRESHOLD = threshold;
+    
+                try {
+                    UNSAFE = sun.misc.Unsafe.getUnsafe();
+                    HASHSEED_OFFSET = UNSAFE.objectFieldOffset(
+                        HashMap.class.getDeclaredField("hashSeed"));
+                } catch (NoSuchFieldException | SecurityException e) {
+                    throw new Error("Failed to record hashSeed offset", e);
+                }
+            }
+        }
+    
+        /**
+         * If {@code true} then perform alternative hashing of String keys to reduce
+         * the incidence of collisions due to weak hash code calculation.
+         */
+        transient boolean useAltHashing;
+    
+        /**
+         * A randomizing value associated with this instance that is applied to
+         * hash code of keys to make hash collisions harder to find.
+         */
+        transient final int hashSeed = sun.misc.Hashing.randomHashSeed(this);
+
+构造函数
+
+    	/**
+    	* 检查两个参数，设置容量为大于initialCapacity最小的2的指数。
+    	* 负载因子为入参的负载因子，阀值是计算出来的值和默认最大值中较小的一个
+        * 创建大小为capacity的Entry数组。
+        * 判断是否启用可替代的hash值
+    	*/
+    	public HashMap(int initialCapacity, float loadFactor) {
+            if (initialCapacity < 0)
+                throw new IllegalArgumentException("Illegal initial capacity: " +
+                                                   initialCapacity);
+            if (initialCapacity > MAXIMUM_CAPACITY)
+                initialCapacity = MAXIMUM_CAPACITY;
+            if (loadFactor <= 0 || Float.isNaN(loadFactor))
+                throw new IllegalArgumentException("Illegal load factor: " +
+                                                   loadFactor);
+    
+            // Find a power of 2 >= initialCapacity
+            int capacity = 1;
+            while (capacity < initialCapacity)
+                capacity <<= 1;
+    
+            this.loadFactor = loadFactor;
+            threshold = (int)Math.min(capacity * loadFactor, MAXIMUM_CAPACITY + 1);
+            table = new Entry[capacity];
+            useAltHashing = sun.misc.VM.isBooted() &&
+                    (capacity >= Holder.ALTERNATIVE_HASHING_THRESHOLD);
+            init();
+        }
+    	
+    	//只需要定义初始容量，负载因子采用默认的0.75
+    	public HashMap(int initialCapacity) {
+            this(initialCapacity, DEFAULT_LOAD_FACTOR);
+        }
+    	
+    	//设定初始容量为16，初始负载因子为1.75
+    	public HashMap() {
+            this(DEFAULT_INITIAL_CAPACITY, DEFAULT_LOAD_FACTOR);
+        }
+    	
+    	//创建新的hashmap，将m中的值放入新的map中
+    	public HashMap(Map<? extends K, ? extends V> m) {
+            this(Math.max((int) (m.size() / DEFAULT_LOAD_FACTOR) + 1,
+                          DEFAULT_INITIAL_CAPACITY), DEFAULT_LOAD_FACTOR);
+            putAllForCreate(m);
+        }
+
+成员方法
+
+基本方法
+
+先介绍两个最基本的方法：hash() 散列值优化的扰动函数和indexFor()计算在数组中的位置。
+
+    /**
+    * for jdk8
+    */
+    static final int hash(Object key){
+      int h;
+      return (key == null)?0:(h=key.hashCode() ^ (h>>>16));
+    }
+    
+    /**
+    *	h是优化后的散列值，length是table.length。又因为长度是2的指数倍，因此length-1在二进制中为全1.
+    */
+    static int indexFor(int h, int length) {
+            return h & (length-1);
+    }
+
+	提起hashmap，我们都知道是通过计算key的hash值，然后将对应的value直接放入table数组中hash值对应的位置。从而达到K,V一一对应，不需要像List遍历查找，直接通过hash值取出存放的value。所以在一个hashMap中我们应该考量两点：1、不应该发生太多的哈希碰撞：如果模拟到最恶劣的情况，hashMap将变成链表。2、原型数组table不应太大：适当的数组大小应满足适当的内存空间和合适的哈希碰撞概率。
+
+	一个对象的hashcode是int型，意味着有接近40亿的整型可以存放，而不必担心过多的哈希碰撞的问题。然而，对一个数组而言，不可能设置大小为40亿。一、内存过大不足以实现，二、即使以后能够实现，那也是浪费太多的空间资源。因此如何在小范围内依然能体现哈希值的散列性，这就是以上两个函数的目标。
+
+	先看计算在数组中的下标：因为table的长度都是2的指数呗，因此length-1正好可以作为hash值的低位掩码。
+
+    		10101010 11001100 10110010
+    &		00000000 00000000 00001111
+    -----------------------------------
+    		00000000 00000000 00000010
+
+	如此计算出来，在长度为16的数组中，索引为2.
+
+	那么问题来了，对于散列值而言，就算散列函数再优秀，但是如果只取其低四位的值，发生碰撞的概率将大大提升。那怎样才能使哈希值的散列性体现到后几位中呢？这就是扰动函数的作用了。
+
+    h.hashCode():		1010 1110 1001 1111 0010 1001 0111 0110
+    h >>> 16			0000 0000 0000 0000 1010 1110 1001 1111
+    ^
+    ------------------------------------------------------------------
+    					1010 1110 1001 1111 1000 0111 1110 1001
+
+	右移16位，正好将高16位和低16位异或，最大程度的混合了高低位的信息，增强了哈希值的随机性，并将随机性体现到值的低位上。其目的就是为了最大程度的减小哈希碰撞的概率。
+
+常用成员方法
+
+1. public V put(K key, V value)
+       public V put(K key, V value) {
+               if (key == null)
+                   return putForNullKey(value);
+               int hash = hash(key);//计算散列优化后的哈希值
+               int i = indexFor(hash, table.length);//计算在数组中的索引
+               for (Entry<K,V> e = table[i]; e != null; e = e.next) {//如果在数组对应索引下的单向链表
+                 													//中有同样的key，替换该key的value
+                   Object k;
+                   if (e.hash == hash && ((k = e.key) == key || key.equals(k))) {
+                       V oldValue = e.value;
+                       e.value = value;
+                       e.recordAccess(this);
+                       return oldValue;
+                   }
+               }
+       
+               modCount++;
+               addEntry(hash, key, value, i);
+               return null;
+           }
+   如果key为null时：
+        //只要有key为null，放置在table的第一位。且存放下一个null时，会将之前的value顶替掉。
+       private V putForNullKey(V value) {
+               for (Entry<K,V> e = table[0]; e != null; e = e.next) {
+                   if (e.key == null) {
+                       V oldValue = e.value;
+                       e.value = value;
+                       e.recordAccess(this);
+                       return oldValue;
+                   }
+               }
+               modCount++;
+               addEntry(0, null, value, 0);
+               return null;
+           }
+   添加新的entry：
+       void addEntry(int hash, K key, V value, int bucketIndex) {
+               if ((size >= threshold) && (null != table[bucketIndex])) {//容量达到阀值，数组扩容
+                   resize(2 * table.length);
+                   hash = (null != key) ? hash(key) : 0;
+                   bucketIndex = indexFor(hash, table.length);
+               }
+       
+               createEntry(hash, key, value, bucketIndex);
+           }
+       
+       void createEntry(int hash, K key, V value, int bucketIndex) {
+               Entry<K,V> e = table[bucketIndex];
+               table[bucketIndex] = new Entry<>(hash, key, value, e);
+               size++;
+           }
+       //如果容量已经是最大值，将阀值设为Integer.MAX_VALUE;
+       void resize(int newCapacity) {
+               Entry[] oldTable = table;
+               int oldCapacity = oldTable.length;
+               if (oldCapacity == MAXIMUM_CAPACITY) {
+                   threshold = Integer.MAX_VALUE;
+                   return;
+               }
+       
+               Entry[] newTable = new Entry[newCapacity];
+               boolean oldAltHashing = useAltHashing;
+               useAltHashing |= sun.misc.VM.isBooted() &&
+                       (newCapacity >= Holder.ALTERNATIVE_HASHING_THRESHOLD);
+               boolean rehash = oldAltHashing ^ useAltHashing;
+               transfer(newTable, rehash);
+               table = newTable;
+               threshold = (int)Math.min(newCapacity * loadFactor, MAXIMUM_CAPACITY + 1);
+           }
+       
+           /**
+            * 将当前所有的entry转移到新的table中。需要注意一点：每个entry的单向链表转移后
+            * 会反向，不过影响不大。因为对链表遍历重新注入相当于后进先出，而先放进新链表的
+            * 会出现在新链表的头部。
+            */
+           void transfer(Entry[] newTable, boolean rehash) {
+               int newCapacity = newTable.length;
+               for (Entry<K,V> e : table) {
+                   while(null != e) {
+                       Entry<K,V> next = e.next;
+                       if (rehash) {
+                           e.hash = null == e.key ? 0 : hash(e.key);
+                       }
+                       int i = indexFor(e.hash, newCapacity);
+                       e.next = newTable[i];
+                       newTable[i] = e;
+                       e = next;
+                   }
+               }
+           }
+   添加entry的过程：
+   1. 数组目标索引添加第一个元素：
+      
+   2. 数组目标索引添加第二个元素：
+      
+   3. 数组目标索引添加第三个索引：
+      
+   4. 以此类推，可以看到，在数组同一个索引下一直添加元素，会形成一个单向链表的数据结构。而单向链表的访问离不开遍历。因此会对直接访问的效率影响很大。这就是为什么要在hashMap中避免hash碰撞的原因。
+2. public V get(Object key)
+       	public V get(Object key) {
+               if (key == null)
+                   return getForNullKey();
+               Entry<K,V> entry = getEntry(key);
+       
+               return null == entry ? null : entry.getValue();
+           }
+       	//遍历数组对应下标下的单向链表，找到目标key对应的entry
+       	final Entry<K,V> getEntry(Object key) {
+               int hash = (key == null) ? 0 : hash(key);
+               for (Entry<K,V> e = table[indexFor(hash, table.length)];
+                    e != null;
+                    e = e.next) {
+                   Object k;
+                   if (e.hash == hash &&
+                       ((k = e.key) == key || (key != null && key.equals(k))))
+                       return e;
+               }
+               return null;
+           }
+3. public V remove(Object key)
+       	public V remove(Object key) {
+               Entry<K,V> e = removeEntryForKey(key);
+               return (e == null ? null : e.value);
+           }
+       	//整个过程就是遍历单向链表删除某一项的过程，在此不多过介绍
+       	final Entry<K,V> removeEntryForKey(Object key) {
+               int hash = (key == null) ? 0 : hash(key);
+               int i = indexFor(hash, table.length);
+               Entry<K,V> prev = table[i];
+               Entry<K,V> e = prev;
+       
+               while (e != null) {
+                   Entry<K,V> next = e.next;
+                   Object k;
+                   if (e.hash == hash &&
+                       ((k = e.key) == key || (key != null && key.equals(k)))) {
+                       modCount++;
+                       size--;
+                       if (prev == e)
+                           table[i] = next;
+                       else
+                           prev.next = next;
+                       e.recordRemoval(this);
+                       return e;
+                   }
+                   prev = e;
+                   e = next;
+               }
+       
+               return e;
+           }
+4. 其他成员方法例如contain()，clear()等均是对table数组和数组索引对应的单向链表的遍历。因此不再一一赘述。
+
+HashMap的遍历
+
+HashMap的遍历有针对三个方向的遍历：key，value，entry<>。其本质都是对entry<>数组的遍历，因此在这里只介绍entry<>的遍历。其他的其实也是同样的生成模式。
+
+    private final class EntryIterator extends HashIterator<Map.Entry<K,V>> {
+            public Map.Entry<K,V> next() {
+                return nextEntry();
+            }
+        }
+    
+    Iterator<Map.Entry<K,V>> newEntryIterator()   {
+            return new EntryIterator();
+        }
+    
+    public Set<Map.Entry<K,V>> entrySet() {
+            return entrySet0();
+        }
+    
+        private Set<Map.Entry<K,V>> entrySet0() {
+            Set<Map.Entry<K,V>> es = entrySet;
+            return es != null ? es : (entrySet = new EntrySet());
+        }
+    
+        private final class EntrySet extends AbstractSet<Map.Entry<K,V>> {
+            public Iterator<Map.Entry<K,V>> iterator() {
+                return newEntryIterator();
+            }
+            public boolean contains(Object o) {
+                if (!(o instanceof Map.Entry))
+                    return false;
+                Map.Entry<K,V> e = (Map.Entry<K,V>) o;
+                Entry<K,V> candidate = getEntry(e.getKey());
+                return candidate != null && candidate.equals(e);
+            }
+            public boolean remove(Object o) {
+                return removeMapping(o) != null;
+            }
+            public int size() {
+                return size;
+            }
+            public void clear() {
+                HashMap.this.clear();
+            }
+        }
+
+我们通常使用map.entrySet();来获取整个map的遍历。而看以上代码可以看出最终会指向内部私有类EntrySet。
+
+类中的其他方法不足为奇，只不过是对map方法的再一次调用。而遍历方法iterator()是我们所需要关注的遍历方法。而EntryIterator是继承HashIterator,所以对map的遍历追溯到最后就是HashIterator的实现。
+
+    private abstract class HashIterator<E> implements Iterator<E> {
+            Entry<K,V> next;        // next entry to return
+            int expectedModCount;   // For fast-fail
+            int index;              // current slot
+            Entry<K,V> current;     // current entry
+    
+      		//构造函数
+      		//初始化时就对数组依次遍历，找到第一个不为空的数组元素
+            HashIterator() {
+                expectedModCount = modCount;
+                if (size > 0) { // advance to first entry
+                    Entry[] t = table;
+                    while (index < t.length && (next = t[index++]) == null)
+                        ;
+                }
+            }
+    
+            public final boolean hasNext() {
+                return next != null;
+            }
+    
+      		//粗颗粒的逻辑来看就是如果数组元素为空，则一直遍历下去知道找到不为空的数组元素或者遍历完整个数组
+      		//如果数组元素不为空，则遍历这个单向链表，遍历完后，再找下一个不为空的数组元素。
+            final Entry<K,V> nextEntry() {
+                if (modCount != expectedModCount)
+                    throw new ConcurrentModificationException();
+                Entry<K,V> e = next;
+                if (e == null)
+                    throw new NoSuchElementException();
+    			//将next向后移，如果单向链表中后一位不为空，则取链表后一位，如果为空，则去数组元素下一个
+              	//不为空的元素
+                if ((next = e.next) == null) {
+                    Entry[] t = table;
+                    while (index < t.length && (next = t[index++]) == null)
+                        ;
+                }
+                current = e;
+                return e;
+            }
+    
+            public void remove() {
+                if (current == null)
+                    throw new IllegalStateException();
+                if (modCount != expectedModCount)
+                    throw new ConcurrentModificationException();
+                Object k = current.key;
+                current = null;
+                HashMap.this.removeEntryForKey(k);
+                expectedModCount = modCount;
+            }
+        }
+
+
+
+如上图，HashMap的遍历方向是横向遍历寻找非空元素，如果纵向链表有非空，则先遍历完链表再横向遍历数组。
+
+小结
+
+通过以上对HashMap各方面的分析，我们可以看出这种数据结构的特点：
+
+1. 查找key的时间复杂度十分低。在哈希碰撞不太严重的情况下，近似于O(1)。与此同时意味着哈希碰撞十分严重时，时间复杂度近似于O(N)。
+2. 由于在数组中的下标是根据哈希值确定的，因此遍历时并不会按照添加时的顺序遍历出来。
+3. 为了避免哈希碰撞带来的时间上的损耗，比较浪费内存空间。
